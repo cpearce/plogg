@@ -375,7 +375,7 @@ void ProgressBar::handle(SDL_Event& event) {
       double proportion = (x - progress.x) / progressWidth;
       double duration = mEndTime - mStartTime;
       double seekTime = duration * proportion;
-      mDecoder->seek(seekTime);
+      mDecoder->seek(mStartTime + seekTime);
     }
   }
 }
@@ -597,6 +597,7 @@ void OggDecoder::get_end_time(istream& stream, ogg_sync_state* state) {
   mLength = stream.tellg();
 
   const int step = 5000;
+  ogg_int64_t step_offset = mLength - step;
   while (1) {
     ogg_page page;    
     int ret = ogg_sync_pageseek(state, &page);
@@ -605,8 +606,9 @@ void OggDecoder::get_end_time(istream& stream, ogg_sync_state* state) {
       assert(buffer);
 
       // Read from the file into the buffer
-      stream.seekg(-step, ios::cur);        
+      stream.seekg(step_offset);
       stream.read(buffer, step);
+      step_offset -= step;
       int bytes = stream.gcount();
       assert(bytes != 0);
 
