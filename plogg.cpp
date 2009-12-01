@@ -565,7 +565,11 @@ void OggDecoder::read_headers(istream& stream, ogg_sync_state* state) {
     ogg_packet packet;
     while (!headersDone &&
       (ret = ogg_stream_packetpeek(&stream->mState, &packet)) != 0) {
-        assert(ret == 1);
+        if (ret == -1) {
+          // Sync loss, may be hole in data, or a partial packet. Typically
+          // a chopped video.
+          continue;
+        }
 
         // A packet is available. If it is not a header packet we exit.
         // If it is a header packet, process it as normal.
