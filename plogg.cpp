@@ -991,12 +991,28 @@ bool OggDecoder::peek_theora_packet(istream& is,
   return true;
 }
 
+// Returns 1 if the theora info struct is decoding verions (maj,min,sub)
+// or later, otherwise returns 0.
+static int
+TheoraVersion(th_info* info,
+              unsigned char maj,
+              unsigned char min,
+              unsigned char sub)
+{
+  ogg_uint32_t ver = (maj << 16) + (min << 8) + sub;
+  ogg_uint32_t th_ver = (info->version_major << 16) +
+                        (info->version_minor << 8) +
+                        info->version_subminor;
+  return (th_ver >= ver) ? 1 : 0;
+}
+
 bool OggDecoder::read_theora_packet(istream& is,
                                     ogg_sync_state* state,
                                     OggStream* video,
                                     ogg_packet* packet,
                                     bool& used_buffered_packet)
 {
+  int version_3_2_1 = TheoraVersion(&video->mTheora.mInfo,3,2,1);
   used_buffered_packet = false;
   if (mVideoPackets.size() > 0) {
     // We have a buffered packet, return that.
@@ -1021,12 +1037,14 @@ bool OggDecoder::read_theora_packet(istream& is,
   }
   
   // We shouldn't get a header packet here, we should have -1 granulepos.
+  int shift = video->mTheora.mInfo.keyframe_granule_shift;
   assert(packet->granulepos == -1);
   if (mGranulepos != -1) {
     // Packet's granulepos is the previous packet's granulepos incremented.
     if (th_packet_iskeyframe(packet)) {
-      packet->granulepos =
-        th_granule_frame(&video->mTheora.mCtx, mGranulepos) + 1;
+      ogg_int64_t frame_index = th_granule_frame(video->mTheora.mCtx,
+                                                 mGranulepos);
+      packet->granulepos = (frame_index + version_3_2_1) << shift;
     } else {
       packet->granulepos = mGranulepos + 1;
     }
@@ -1052,19 +1070,40 @@ bool OggDecoder::read_theora_packet(istream& is,
   list<ogg_packet*>::reverse_iterator rev_itr = mVideoPackets.rbegin();
   ogg_packet* prev = *rev_itr;
   rev_itr++;
-  int shift = video->mTheora.mInfo.keyframe_granule_shift;
   while (rev_itr != mVideoPackets.rend()) {
     ogg_packet* op = *rev_itr;
     assert(op->granulepos == -1);
     assert(prev->granulepos != -1);
     if (th_packet_iskeyframe(op)) {
-      op->granulepos =
-        (th_granule_frame(&video->mTheora.mCtx, prev->granulepos) - 1) << shift;
+      ogg_int64_t frame_index = th_granule_frame(video->mTheora.mCtx,
+                                                 prev->granulepos);
+      op->granulepos = (frame_index + version_3_2_1 - 1) << shift;
     } else {
-      op->granulepos = prev->granulepos - 1;
+      ogg_int64_t granulepos;
+      if (th_packet_iskeyframe(prev)) {
+        // The previous frame is a keyframe, so we can't just subtract 1
+        // from the "keyframe offset" part of its granulepos, as it
+        // doesn't have one! So fake it, take the keyframe offset as the
+        // max possible keyframe offset. This means the granulepos claims
+        // that it depends on the wrong keyframe, but at least its granule
+        // number will be correct, so the times we calculate from this
+        // granulepos will also be correct.
+        ogg_int64_t frameno = th_granule_frame(video->mTheora.mCtx,
+                                               prev->granulepos);
+        ogg_int64_t max_offset = min((frameno - 1),
+                                     (ogg_int64_t)(1 << shift) - 1);
+        ogg_int64_t granule = frameno +
+                              TheoraVersion(&video->mTheora.mInfo,3,2,1) -
+                              1 - max_offset;
+        assert(granule > 0);
+        granulepos = (granule << shift) + max_offset;
+      } else {
+        granulepos = prev->granulepos - 1;
+      }
+      op->granulepos = granulepos;
     }
-    assert(th_granule_frame(&video->mTheora.mCtx, prev->granulepos) ==
-           th_granule_frame(&video->mTheora.mCtx, op->granulepos) + 1);
+    assert(th_granule_frame(video->mTheora.mCtx, prev->granulepos) ==
+           th_granule_frame(video->mTheora.mCtx, op->granulepos) + 1);
     prev = op;
     rev_itr++;
   }
